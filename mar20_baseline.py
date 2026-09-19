@@ -1,40 +1,3 @@
-# -*- coding: utf-8 -*-
-"""MAR20 uzerinde YOLOv5 / YOLOv8 / YOLO11 / YOLO12 / YOLO26 baseline karsilastirmasi.
-
-Tek dosya; sirayla su adimlari yapar:
-
-  1) MAR20'yi (VOC/HBB) Ultralytics YOLO duzenine cevirir      -> mar20_yolo/
-  2) Bes modeli AYNI ayarlarla sirayla egitir                  -> runs_mar20/<model>/
-  3) Secilen best.pt'leri test bolmesinde degerlendirir        -> runs_mar20/test_<model>/
-  4) Karsilastirma tablosunu ve tam hassasiyetli metrikleri yazar
-
-Kullanim
---------
-    python mar20_baseline.py                      # bastan sona hepsi
-    python mar20_baseline.py --only-prepare       # sadece veri hazirligi
-    python mar20_baseline.py --models 5 8         # sadece secilen surumler
-    python mar20_baseline.py --skip-train         # egitimi atla, sadece test et
-    python mar20_baseline.py --epochs 100         # daha kisa butce
-    python mar20_baseline.py --scale s            # nano yerine small
-    python mar20_baseline.py --split official     # resmi MAR20 test bolmesi
-
-Bolme stratejisi
-----------------
-Varsayilan: 7:2:1 (train:val:test), tum havuz sinif-dengeli olarak yeniden
-bolunur. Her sinif kovasi ayri bolundugu icin nadir siniflar da her uc
-bolmede temsil edilir.
-
-Alternatif: --split official  -> MAR20'nin resmi 1.331/2.511 train/test
-listesini korur, val'i resmi train icinden ayirir. Literaturdeki MAR20
-sonuclari (~%90 mAP@0.5) bu bolmeyi kullanir.
-
-NOT: MAR20 goruntuleri 60 askeri havaalani sahnesinden kirpilmistir. Havuzu
-yeniden bolmek ayni sahneye ait benzer kirpimlarin bolmeler arasina
-dusmesine yol acabilir; bu da test skorlarini yukseltir. Yeniden bolme
-yapildiginda script bu sizintiyi algisal hash ile olcup raporlar.
-
-Test bolmesi ne egitimde ne de checkpoint seciminde gorulur.
-"""
 from __future__ import annotations
 
 import argparse
@@ -49,9 +12,8 @@ from pathlib import Path
 
 IMG_EXT = (".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff")
 
-# surum anahtari -> (kosu adi, on-egitimli agirlik sablonu)
 MODELS = {
-    "5":  ("yolov5{s}u", "yolov5{s}u.pt"),   # Ultralytics'te YOLOv5 yalniz "u" (anchor-free) olarak var
+    "5":  ("yolov5{s}u", "yolov5{s}u.pt"),
     "8":  ("yolov8{s}",  "yolov8{s}.pt"),
     "11": ("yolo11{s}",  "yolo11{s}.pt"),
     "12": ("yolo12{s}",  "yolo12{s}.pt"),
@@ -59,22 +21,13 @@ MODELS = {
 }
 ORDER = ["5", "8", "11", "12", "26"]
 
-# DIKKAT: Windows dosya sistemi buyuk/kucuk harf duyarsizdir. Cikti klasoru
-# kaynak "MAR20" ile ayni ada sahip olursa (mar20/MAR20) ayni yolu gosterir ve
-# hazirlik adimi kaynagi siler. Bu yuzden cikti adi kasten farklidir.
 DATA_DIR = Path("mar20_yolo")
 DATA_YAML = DATA_DIR / "data.yaml"
-# Ultralytics goreli bir "project" degerini kendi runs kokunun (runs/detect/...)
-# altina yerlestiriyor. Mutlak yol vererek ciktilari proje klasorunde tutuyoruz.
 PROJECT = Path("runs_mar20").resolve()
 METRICS_JSON = Path("mar20_test_metrics.json")
 
 
-# --------------------------------------------------------------------------- #
-# 1) Veri hazirligi                                                            #
-# --------------------------------------------------------------------------- #
 def find_dir(root: Path, *parts: str):
-    """Kok altinda adinda verilen parcalarin hepsi gecen en sig klasoru bulur."""
     want = [p.lower() for p in parts]
     best = None
     for d in root.rglob("*"):
@@ -89,7 +42,7 @@ def discover(root: Path) -> dict:
     if images is None:
         sys.exit("JPEGImages klasoru bulunamadi: %s" % root)
 
-    hbb = find_dir(root, "horizontal")          # OBB klasorunu kasten almiyoruz
+    hbb = find_dir(root, "horizontal")
     if hbb is None:
         ann = find_dir(root, "annotation")
         if ann is None:
@@ -109,8 +62,6 @@ def discover(root: Path) -> dict:
 
 
 def parse_voc(xml_path: Path, img_path: Path | None = None):
-    """VOC XML'i okur. MAR20'de 21 dosyada <size> 0x0 yaziyor; o durumda
-    gercek boyut goruntunun kendisinden okunur (yoksa 123 kutu kaybolur)."""
     r = ET.parse(xml_path).getroot()
     size = r.find("size")
     w = int(float(size.findtext("width"))) if size is not None else 0
@@ -132,7 +83,6 @@ def parse_voc(xml_path: Path, img_path: Path | None = None):
 
 
 def to_yolo(box, w, h):
-    """VOC kutusu -> normalize (cx, cy, w, h); gecersizse None."""
     _, x1, y1, x2, y2 = box
     x1, x2 = sorted((x1, x2))
     y1, y2 = sorted((y1, y2))
@@ -145,18 +95,12 @@ def to_yolo(box, w, h):
 
 
 def class_sort_key(n: str):
-    """A1..A20 sayisal sirada; digerleri alfabetik."""
     if n[:1].upper() == "A" and n[1:].isdigit():
         return (0, int(n[1:]), "")
     return (1, 0, n)
 
 
 def stratified_split(stems, per_img, ratios, seed):
-    """Goruntuleri baskin sinifa gore gruplayip verilen orana boler.
-
-    Her sinif kovasi ayri ayri bolundugu icin nadir siniflar da her uc
-    bolmede temsil edilir; duz rastgele bolmede bu garanti degildir.
-    """
     rng = random.Random(seed)
     buckets = collections.defaultdict(list)
     for stem in stems:
@@ -172,7 +116,6 @@ def stratified_split(stems, per_img, ratios, seed):
         n = len(group)
         n_tr = round(n * r_tr / total)
         n_va = round(n * r_va / total)
-        # kucuk kovalarda en az birer ornek val/test'e dussun
         if n >= 3:
             n_tr = min(n_tr, n - 2)
             n_va = max(1, min(n_va, n - n_tr - 1))
@@ -185,7 +128,6 @@ def stratified_split(stems, per_img, ratios, seed):
 
 
 def dhash(path: Path, size: int = 8) -> int:
-    """Algisal fark-hash'i (dHash). Yakin-kopya goruntuler ayni/benzer hash uretir."""
     from PIL import Image
     with Image.open(path) as im:
         im = im.convert("L").resize((size + 1, size), Image.BILINEAR)
@@ -199,12 +141,6 @@ def dhash(path: Path, size: int = 8) -> int:
 
 
 def measure_leakage(splits, imgs, max_dist: int = 5) -> None:
-    """Bolmeler arasi yakin-kopya sizintisini olcer ve raporlar.
-
-    Yeniden bolme yapildiginda ayni havaalani sahnesinin benzer kirpimlari
-    farkli bolmelere dusebilir; bu test skorunu yapay olarak yukseltir.
-    Burada iddia yerine olculmus bir sayi uretiyoruz.
-    """
     print("\nBolmeler arasi yakin-kopya taramasi (dHash, Hamming <= %d)..." % max_dist)
     hashes = {sp: [(s, dhash(imgs[s])) for s in stems] for sp, stems in splits.items()}
 
@@ -269,7 +205,6 @@ def prepare(root: Path, out: Path, val_frac: float, seed: int,
               % (len(official_train), len(official_test)))
 
     if split_mode == "official":
-        # Resmi TEST listesi korunur; VAL resmi TRAIN icinden ayrilir.
         if not official_train or not official_test:
             sys.exit("Resmi listeler okunamadi (ImageSets/Main).")
         sub = stratified_split(official_train, per_img,
@@ -277,7 +212,6 @@ def prepare(root: Path, out: Path, val_frac: float, seed: int,
         splits = {"train": sub["train"], "valid": sub["valid"], "test": official_test}
         print("Bolme modu  : official (resmi test korundu)")
     else:
-        # Kullanicinin istedigi oran; tum havuz yeniden bolunur.
         ratios = tuple(float(x) for x in split_mode.split(":"))
         if len(ratios) != 3 or sum(ratios) <= 0:
             sys.exit("--split 'train:val:test' seklinde olmali, ornek 7:2:1")
@@ -286,8 +220,6 @@ def prepare(root: Path, out: Path, val_frac: float, seed: int,
         print("Bolme modu  : %s (tum havuz yeniden bolundu, sinif-dengeli, seed %d)"
               % (split_mode, seed))
 
-    # Guvenlik kilidi: cikti klasoru kaynagin kendisiyle ayni yolu gosteriyorsa
-    # (Windows'ta mar20 == MAR20) silme, cunku bu veri setini yok eder.
     src_resolved = str(root.resolve()).lower()
     out_resolved = str(out.resolve()).lower()
     if out_resolved == src_resolved or src_resolved.startswith(out_resolved + "\\") \
@@ -321,8 +253,8 @@ def prepare(root: Path, out: Path, val_frac: float, seed: int,
         stats[sp] = (len(stems), n_obj, len(seen))
 
     DATA_YAML.write_text(
-        "# MAR20 - resmi test bolmesi korunmus, val resmi train icinden ayrilmistir\n"
-        "path: %s\n" % out.resolve().as_posix()
+        "# MAR20 - split: %s (seed %d)\n" % (split_mode, seed)
+        + "path: %s\n" % out.resolve().as_posix()
         + "train: train/images\nval: valid/images\ntest: test/images\n\n"
         + "nc: %d\n" % len(names)
         + "names: [%s]\n" % ", ".join("'%s'" % n for n in names),
@@ -345,13 +277,9 @@ def prepare(root: Path, out: Path, val_frac: float, seed: int,
         print("  %-5s %6d" % (n, counts[n]))
 
 
-# --------------------------------------------------------------------------- #
-# 2) Egitim                                                                    #
-# --------------------------------------------------------------------------- #
 def train_all(keys, scale, epochs, batch, imgsz, seed, device, workers):
     from ultralytics import YOLO
 
-    # Makalede "paylasilan egitim yapilandirmasi" olarak raporlanacak ayarlar.
     shared = dict(
         data=str(DATA_YAML), epochs=epochs, imgsz=imgsz, batch=batch,
         seed=seed, deterministic=True, pretrained=True, patience=100,
@@ -380,9 +308,6 @@ def train_all(keys, scale, epochs, batch, imgsz, seed, device, workers):
     return durations
 
 
-# --------------------------------------------------------------------------- #
-# 3) Test                                                                      #
-# --------------------------------------------------------------------------- #
 def test_all(keys, scale, imgsz, batch, device):
     from ultralytics import YOLO
 
@@ -400,7 +325,7 @@ def test_all(keys, scale, imgsz, batch, device):
 
         r = YOLO(str(w)).val(
             data=str(DATA_YAML), split="test", imgsz=imgsz, batch=batch,
-            device=device, workers=0,          # Windows'ta dataloader kilitlenmesini onler
+            device=device, workers=0,
             plots=True, verbose=True,
             project=str(PROJECT), name="test_%s" % name, exist_ok=True,
         )
@@ -453,7 +378,6 @@ def report(results, durations):
     print("Tam hassasiyet + sinif bazli AP -> %s" % METRICS_JSON.resolve())
 
 
-# --------------------------------------------------------------------------- #
 def main():
     ap = argparse.ArgumentParser(description="MAR20 YOLO baseline karsilastirmasi")
     ap.add_argument("--mar20-root", type=Path, default=Path("MAR20"),
@@ -478,7 +402,6 @@ def main():
     ap.add_argument("--skip-train", action="store_true", help="egitimi atla, sadece test et")
     a = ap.parse_args()
 
-    # surumleri sabit sirada tut (kullanici sirasiz verse bile)
     keys = [k for k in ORDER if k in set(a.models)]
 
     if a.force_prepare or not DATA_YAML.exists():
